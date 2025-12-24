@@ -23,6 +23,7 @@ DEFAULTS = {
     "temperature": 0.7,
     "max_tokens": 4096,
     "mcp_servers": {},  # server_name -> enabled (bool)
+    "debug": False,  # Show verbose tool call logs
 }
 
 
@@ -155,6 +156,14 @@ class Config:
     def is_mcp_server_enabled(self, name: str) -> bool:
         """Check if an MCP server is enabled (default: True if not specified)."""
         return self._config["mcp_servers"].get(name, True)
+
+    @property
+    def debug(self) -> bool:
+        return self._config.get("debug", False)
+
+    @debug.setter
+    def debug(self, value: bool) -> None:
+        self._config["debug"] = bool(value)
 
     # Generic set method for runtime commands
     def set(self, key: str, value: Any) -> None:

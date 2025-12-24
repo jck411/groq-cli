@@ -379,6 +379,7 @@ class GroqChat:
 [bold]Commands:[/bold]
   /help              Show this help
   /clear             Clear conversation
+  /debug             Toggle debug logging
   /models [filter]   List available models
   /model             Show current model
   /model <name>      Switch model
@@ -401,6 +402,15 @@ class GroqChat:
             Panel(help_text.strip(), title="Groq CLI Help", border_style="blue")
         )
 
+    def _toggle_debug(self) -> None:
+        """Toggle debug mode on/off."""
+        self.config.debug = not self.config.debug
+        self.config.save()
+        status = "ON" if self.config.debug else "OFF"
+        self.console.print(
+            f"[info]Debug mode: {status}[/info]", style=INFO_STYLE
+        )
+
     def _handle_command(self, cmd: str) -> bool:
         """Handle slash commands. Returns True if handled."""
         parts = cmd.strip().split(maxsplit=1)
@@ -414,6 +424,9 @@ class GroqChat:
             return True
         elif command == "/clear":
             self._clear_session()
+            return True
+        elif command == "/debug":
+            self._toggle_debug()
             return True
         elif command == "/quit":
             self.running = False
@@ -463,6 +476,7 @@ class GroqChat:
     async def _execute_tool_calls(self, tool_calls: list) -> list[dict[str, Any]]:
         """Execute tool calls from OpenAI response."""
         tool_results = []
+        debug = self.config.debug
         
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
@@ -475,12 +489,21 @@ class GroqChat:
                 Text(f"🔧 Calling {tool_name}...", style=TOOL_STYLE)
             )
             
+            # Show arguments in debug mode
+            if debug:
+                args_formatted = json.dumps(arguments, indent=2)
+                self.console.print(f"[dim]  Args: {args_formatted}[/dim]")
+            
             # Execute tool via MCP (async)
             result = await self.mcp.call_tool(tool_name, arguments)
             
-            # Truncate long results for display
-            display_result = result[:200] + "..." if len(result) > 200 else result
-            self.console.print(f"[dim]  → {display_result}[/dim]")
+            # Show result (full in debug mode, truncated otherwise)
+            if debug:
+                self.console.print(f"[dim]  Result:[/dim]")
+                self.console.print(f"[dim]{result}[/dim]")
+            else:
+                display_result = result[:200] + "..." if len(result) > 200 else result
+                self.console.print(f"[dim]  → {display_result}[/dim]")
             
             tool_results.append({
                 "role": "tool",
