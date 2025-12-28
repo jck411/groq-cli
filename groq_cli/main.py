@@ -11,6 +11,7 @@ import json
 import os
 import signal
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -52,14 +53,14 @@ class GroqChat:
     ):
         self.console = Console()
         self.running = True
-        
+
         # Load config (hot reload enabled)
         self.config = config or Config()
-        
+
         # Use CLI arg model if provided, otherwise use config
         self.model_name = model or self.config.model
         self.mcp_config = mcp_config
-        
+
         # Initialize Groq client (OpenAI-compatible)
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
@@ -68,19 +69,19 @@ class GroqChat:
                 style=ERROR_STYLE,
             )
             sys.exit(1)
-        
+
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=GROQ_BASE_URL,
         )
-        
+
         # Initialize MCP client (connected async later)
         self.mcp = MCPClient()
         self.tools: list[dict[str, Any]] | None = None
-        
+
         # Conversation history (OpenAI format)
         self.history: list[dict[str, Any]] = []
-        
+
         # For numbered selection caching
         self._last_model_list: list | None = None
         self._last_mcp_list: list | None = None
@@ -93,10 +94,19 @@ class GroqChat:
         else:
             # Auto-load from Backend's shared mcp_servers.json
             self.mcp.load_config()
-        
+
         # Connect to all configured MCP servers
         await self.mcp.connect_all()
-        
+
+        # Show MCP connection status in debug mode
+        if self.config.debug:
+            self.console.print("\n[bold yellow]═══ DEBUG: MCP Servers ═══[/bold yellow]")
+            for info in self.mcp.list_servers():
+                status = "[green]✓[/green]" if info["running"] else "[red]✗[/red]"
+                transport = "HTTP" if info["http"] else "stdio"
+                self.console.print(f"  {status} {info['name']} ({transport}) - {info['tools']} tools")
+            self.console.print("[bold yellow]══════════════════════════[/bold yellow]\n")
+
         # Build tool definitions
         self._init_tools()
 
@@ -107,7 +117,7 @@ class GroqChat:
     def _init_tools(self) -> None:
         """Initialize tool definitions from MCP servers."""
         mcp_tools = self.mcp.get_all_tools()
-        
+
         if mcp_tools:
             self.tools = mcp_tools
         else:
@@ -194,21 +204,21 @@ class GroqChat:
         """List available MCP servers and activate by typing numbers like '124'."""
         # Discover available servers from Backend_FastAPI
         mcp_dir = Path("/home/human/REPOS/Backend_FastAPI/src/backend/mcp_servers")
-        
+
         if not mcp_dir.exists():
             self.console.print(f"[error]MCP directory not found: {mcp_dir}[/error]", style=ERROR_STYLE)
             return
-        
+
         # Find all *_server.py files
         available = []
         for f in sorted(mcp_dir.glob("*_server.py")):
             name = f.stem.replace("_server", "")  # e.g., "shell_control"
             available.append({"name": name, "file": f.name, "path": str(f)})
-        
+
         if not available:
             self.console.print("[dim]No MCP servers found[/dim]")
             return
-        
+
         # If arg provided, it's a selection like "124" meaning activate 1, 2, 4
         if arg and arg.isdigit():
             # Handle "0" as cancel
@@ -216,48 +226,48 @@ class GroqChat:
                 self._last_mcp_list = None  # Clear cache
                 self.console.print("[dim]Cancelled[/dim]")
                 return
-            
+
             selected_indices = [int(d) - 1 for d in arg]  # Parse each digit
             selected_names = []
-            
+
             for idx in selected_indices:
                 if 0 <= idx < len(available):
                     selected_names.append(available[idx]["name"])
-            
+
             if not selected_names:
                 self.console.print("[error]No valid selections[/error]", style=ERROR_STYLE)
                 return
-            
+
             # Save to config
             for server in available:
                 self.config.set_mcp_server(server["name"], server["name"] in selected_names)
             self.config.save()
-            
+
             # Generate mcp_servers.json
             self._generate_mcp_config(available, selected_names)
-            
+
             self.console.print(f"[info]Activated: {', '.join(selected_names)}[/info]", style=INFO_STYLE)
             self.console.print("[dim]Restart groq-chat to load the servers.[/dim]")
             return
-        
+
         # Show numbered list
         self.console.print(f"\n[bold]Available MCP Servers ({len(available)}):[/bold]")
         for i, server in enumerate(available, 1):
             enabled = self.config.is_mcp_server_enabled(server["name"])
             status = "[green]✓[/green]" if enabled else "[dim]○[/dim]"
             self.console.print(f"  [yellow]{i}[/yellow]. {status} {server['name']}")
-        
+
         self.console.print()
         self.console.print("[dim]Type digits to activate (e.g. '134'), or 0 to cancel[/dim]")
         self.console.print()
-        
+
         # Cache for bare number handling
         self._last_mcp_list = available
 
     def _generate_mcp_config(self, available: list, selected_names: list) -> None:
         """Generate mcp_servers.json with selected servers."""
         config_path = self.config.config_dir / "mcp_servers.json"
-        
+
         servers = {}
         for server in available:
             if server["name"] in selected_names:
@@ -270,9 +280,9 @@ class GroqChat:
                         "HOST_ROOT_PATH": "/home/human/GoogleDrive/host_profiles"
                     }
                 }
-        
+
         mcp_config = {"servers": servers}
-        
+
         try:
             with open(config_path, "w") as f:
                 json.dump(mcp_config, f, indent=2)
@@ -284,12 +294,12 @@ class GroqChat:
         """Handle /mode command - switch quake terminal mode."""
         mode_file = Path.home() / ".config" / "quake-llm-terminal" / "default-provider"
         valid_modes = ["terminal", "openrouter", "gemini", "groq"]
-        
+
         # Get current mode
         current = "terminal"
         if mode_file.exists():
             current = mode_file.read_text().strip()
-        
+
         if not mode:
             # Show current mode and options
             self.console.print(f"\n[bold]Quake Terminal Mode:[/bold]")
@@ -304,18 +314,18 @@ class GroqChat:
                 self.console.print(f"  {marker} [cyan]{m}[/cyan] - {desc}")
             self.console.print(f"\n[dim]Usage: /mode <terminal|openrouter|gemini|groq>[/dim]")
             return
-        
+
         mode = mode.lower()
         if mode not in valid_modes:
             self.console.print(f"[error]Invalid mode: {mode}[/error]", style=ERROR_STYLE)
             self.console.print(f"[dim]Use: terminal, openrouter, gemini, or groq[/dim]")
             return
-        
+
         # Save new mode
         mode_file.parent.mkdir(parents=True, exist_ok=True)
         mode_file.write_text(mode)
         self.console.print(f"[info]Mode set to: {mode}[/info]", style=INFO_STYLE)
-        
+
         if mode != "groq":
             # Exit and let quake terminal restart with new mode
             self.console.print("[dim]Exiting to switch mode. Press quake hotkey to reopen.[/dim]")
@@ -324,7 +334,7 @@ class GroqChat:
     def _list_models(self, filter_text: str | None = None) -> None:
         """List available models with numbered selection."""
         models = list_models()
-        
+
         # Check if filter_text is a number (selection)
         if filter_text and filter_text.isdigit():
             # Handle "0" as cancel
@@ -332,7 +342,7 @@ class GroqChat:
                 self._last_model_list = None
                 self.console.print("[dim]Cancelled[/dim]")
                 return
-            
+
             idx = int(filter_text) - 1  # 1-indexed
             if hasattr(self, '_last_model_list') and self._last_model_list and 0 <= idx < len(self._last_model_list):
                 selected = self._last_model_list[idx]
@@ -341,22 +351,22 @@ class GroqChat:
             else:
                 self.console.print("[error]Invalid selection. Run /models first.[/error]", style=ERROR_STYLE)
                 return
-        
+
         # Filter if provided (non-numeric)
         if filter_text:
             filter_lower = filter_text.lower()
             models = [m for m in models if filter_lower in m.name.lower()]
-        
+
         if not models:
             self.console.print("[dim]No models found matching filter[/dim]")
             return
-        
+
         # Cache for selection
         self._last_model_list = models
-        
+
         # Show recommended first
         recommended = get_recommended()
-        
+
         self.console.print(f"\n[bold]Available Models ({len(models)}):[/bold]")
         for i, model in enumerate(models, 1):
             is_rec = model.name in recommended
@@ -473,30 +483,88 @@ class GroqChat:
 
         return False
 
+    def _handle_error(self, e: Exception, context: str = "") -> None:
+        """Handle errors with full debug info when debug mode is on."""
+        debug = self.config.debug
+
+        self.console.print(f"\n[error]Error: {e}[/error]", style=ERROR_STYLE)
+
+        if debug:
+            self.console.print("\n[bold red]═══ DEBUG: Error Details ═══[/bold red]")
+            self.console.print(f"[dim]Context: {context}[/dim]")
+            self.console.print(f"[dim]Exception type: {type(e).__name__}[/dim]")
+            self.console.print(f"[dim]Exception str: {str(e)}[/dim]")
+
+            # Try to extract more info from the exception
+            if hasattr(e, 'response'):
+                resp = e.response
+                self.console.print(f"[dim]Response status: {getattr(resp, 'status_code', 'N/A')}[/dim]")
+                if hasattr(resp, 'text'):
+                    self.console.print(f"[dim]Response body:[/dim]")
+                    try:
+                        body = json.loads(resp.text)
+                        self.console.print(f"[dim]{json.dumps(body, indent=2)}[/dim]")
+                        # Look for Groq-specific error fields
+                        if 'error' in body:
+                            error = body['error']
+                            if 'failed_generation' in error:
+                                self.console.print(f"\n[bold yellow]failed_generation:[/bold yellow]")
+                                self.console.print(f"[dim]{error['failed_generation']}[/dim]")
+                            if 'message' in error:
+                                self.console.print(f"[dim]Error message: {error['message']}[/dim]")
+                    except:
+                        self.console.print(f"[dim]{resp.text}[/dim]")
+
+            if hasattr(e, 'body'):
+                self.console.print(f"[dim]Error body: {e.body}[/dim]")
+                # Groq errors often have 'failed_generation' in body
+                if isinstance(e.body, dict):
+                    if 'failed_generation' in e.body:
+                        self.console.print(f"\n[bold yellow]failed_generation:[/bold yellow]")
+                        self.console.print(f"[dim]{e.body['failed_generation']}[/dim]")
+                    if 'error' in e.body and isinstance(e.body['error'], dict):
+                        if 'failed_generation' in e.body['error']:
+                            self.console.print(f"\n[bold yellow]failed_generation:[/bold yellow]")
+                            self.console.print(f"[dim]{e.body['error']['failed_generation']}[/dim]")
+
+            # Print full traceback
+            self.console.print(f"\n[dim]Traceback:[/dim]")
+            self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            self.console.print("[bold red]════════════════════════════[/bold red]\n")
+
     async def _execute_tool_calls(self, tool_calls: list) -> list[dict[str, Any]]:
         """Execute tool calls from OpenAI response."""
         tool_results = []
         debug = self.config.debug
-        
+
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
+            raw_arguments = tool_call.function.arguments
+
             try:
-                arguments = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
+                arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as je:
+                self.console.print(
+                    f"[error]Failed to parse tool arguments for {tool_name}[/error]",
+                    style=ERROR_STYLE
+                )
+                if debug:
+                    self.console.print(f"[dim]  Raw arguments: {raw_arguments}[/dim]")
+                    self.console.print(f"[dim]  JSON error: {je}[/dim]")
                 arguments = {}
-            
+
             self.console.print(
                 Text(f"🔧 Calling {tool_name}...", style=TOOL_STYLE)
             )
-            
+
             # Show arguments in debug mode
             if debug:
                 args_formatted = json.dumps(arguments, indent=2)
                 self.console.print(f"[dim]  Args: {args_formatted}[/dim]")
-            
+
             # Execute tool via MCP (async)
             result = await self.mcp.call_tool(tool_name, arguments)
-            
+
             # Show result (full in debug mode, truncated otherwise)
             if debug:
                 self.console.print(f"[dim]  Result:[/dim]")
@@ -504,37 +572,39 @@ class GroqChat:
             else:
                 display_result = result[:200] + "..." if len(result) > 200 else result
                 self.console.print(f"[dim]  → {display_result}[/dim]")
-            
+
             tool_results.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
                 "content": result,
             })
-        
+
         return tool_results
 
     async def _send_message(self, message: str) -> None:
         """Send message to Groq and handle response with streaming."""
+        debug = self.config.debug
+
         try:
             # Build messages list
             messages = []
-            
+
             # Add system prompt if set
             if self.config.system_prompt:
                 messages.append({
                     "role": "system",
                     "content": self.config.system_prompt
                 })
-            
+
             # Add conversation history
             messages.extend(self.history)
-            
+
             # Add user message
             messages.append({
                 "role": "user",
                 "content": message
             })
-            
+
             # Build request kwargs
             kwargs: dict[str, Any] = {
                 "model": self.model_name,
@@ -543,28 +613,78 @@ class GroqChat:
                 "max_tokens": self.config.max_tokens,
                 "stream": True,
             }
-            
+
             if self.tools:
                 kwargs["tools"] = self.tools
                 kwargs["tool_choice"] = "auto"
-            
+
+            # Debug: show full request
+            if debug:
+                self.console.print("\n[bold yellow]═══ DEBUG: API Request ═══[/bold yellow]")
+                self.console.print(f"[dim]Model: {self.model_name}[/dim]")
+                self.console.print(f"[dim]Temperature: {self.config.temperature} | Max tokens: {self.config.max_tokens}[/dim]")
+                self.console.print(f"[dim]Message count: {len(messages)}[/dim]")
+
+                # Show tool schemas (first time only, or if requested)
+                if self.tools:
+                    tool_names = [t.get('function', {}).get('name', '?') for t in self.tools]
+                    self.console.print(f"[dim]Tools ({len(self.tools)}): {', '.join(tool_names)}[/dim]")
+
+                self.console.print("[dim]Messages (full):[/dim]")
+                for i, msg in enumerate(messages):
+                    role = msg.get('role', '?')
+                    content = msg.get('content', '')
+                    tool_calls = msg.get('tool_calls', [])
+
+                    if content:
+                        # Show full content, properly formatted
+                        self.console.print(f"  [dim]{i}. [{role}]:[/dim]")
+                        for line in str(content)[:2000].split('\n'):  # Cap at 2000 chars for sanity
+                            self.console.print(f"      [dim]{line}[/dim]")
+                        if len(str(content)) > 2000:
+                            self.console.print(f"      [dim]... (truncated, {len(str(content))} chars total)[/dim]")
+                    elif tool_calls:
+                        self.console.print(f"  [dim]{i}. [{role}]: (tool_calls: {len(tool_calls)})[/dim]")
+                    else:
+                        self.console.print(f"  [dim]{i}. [{role}]: (no content)[/dim]")
+                self.console.print("[bold yellow]══════════════════════════[/bold yellow]\n")
+
             # Send request with streaming
             stream = await self.client.chat.completions.create(**kwargs)
-            
+
             # Collect streamed response
             full_content = ""
             tool_calls_data: dict[int, dict] = {}  # index -> {id, name, arguments}
-            
+            chunk_count = 0
+
             async for chunk in stream:
+                chunk_count += 1
+
+                # Debug: show raw chunk data
+                if debug:
+                    self.console.print(f"[dim]  [chunk {chunk_count}]: {chunk}[/dim]")
+
+                # Check for errors in chunk (Groq sometimes returns errors here)
+                if hasattr(chunk, 'error') and chunk.error:
+                    self.console.print(f"\n[error]API Error in chunk: {chunk.error}[/error]", style=ERROR_STYLE)
+                    if debug:
+                        self.console.print(f"[dim]Full error chunk: {chunk}[/dim]")
+                    continue
+
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if not delta:
                     continue
-                
+
+                # Check for finish_reason that indicates issues
+                finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
+                if debug and finish_reason:
+                    self.console.print(f"[dim]  [finish_reason]: {finish_reason}[/dim]")
+
                 # Handle text content
                 if delta.content:
                     full_content += delta.content
                     self.console.print(delta.content, end="")
-                
+
                 # Handle tool calls (streamed)
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
@@ -578,14 +698,26 @@ class GroqChat:
                                 tool_calls_data[idx]["name"] = tc.function.name
                             if tc.function.arguments:
                                 tool_calls_data[idx]["arguments"] += tc.function.arguments
-            
+
             self.console.print()  # Newline after streaming
-            
+
+            if debug:
+                self.console.print(f"[dim]Total chunks received: {chunk_count}[/dim]")
+
             # Update history with user message
             self.history.append({"role": "user", "content": message})
-            
+
             # Handle tool calls if any
             if tool_calls_data:
+                if debug:
+                    self.console.print("\n[bold yellow]═══ DEBUG: Tool Calls ═══[/bold yellow]")
+                    for idx, tc_data in tool_calls_data.items():
+                        self.console.print(f"[dim]Tool {idx}:[/dim]")
+                        self.console.print(f"[dim]  ID: {tc_data['id']}[/dim]")
+                        self.console.print(f"[dim]  Name: {tc_data['name']}[/dim]")
+                        self.console.print(f"[dim]  Arguments (raw): {tc_data['arguments']}[/dim]")
+                    self.console.print("[bold yellow]═════════════════════════[/bold yellow]\n")
+
                 # Build tool_calls list for history
                 assistant_tool_calls = []
                 for idx in sorted(tool_calls_data.keys()):
@@ -598,36 +730,36 @@ class GroqChat:
                             "arguments": tc_data["arguments"]
                         }
                     })
-                
+
                 # Add assistant message with tool calls
                 self.history.append({
                     "role": "assistant",
                     "content": full_content or None,
                     "tool_calls": assistant_tool_calls
                 })
-                
+
                 # Create mock tool_call objects for execution
                 class MockFunction:
                     def __init__(self, name: str, arguments: str):
                         self.name = name
                         self.arguments = arguments
-                
+
                 class MockToolCall:
                     def __init__(self, id: str, function: MockFunction):
                         self.id = id
                         self.function = function
-                
+
                 mock_calls = [
                     MockToolCall(tc["id"], MockFunction(tc["function"]["name"], tc["function"]["arguments"]))
                     for tc in assistant_tool_calls
                 ]
-                
+
                 # Execute tool calls
                 tool_results = await self._execute_tool_calls(mock_calls)
-                
+
                 # Add tool results to history
                 self.history.extend(tool_results)
-                
+
                 # Continue conversation with tool results
                 await self._continue_after_tools()
             else:
@@ -637,26 +769,26 @@ class GroqChat:
                         "role": "assistant",
                         "content": full_content
                     })
-                    
+
         except Exception as e:
-            self.console.print(
-                f"[error]Error: {e}[/error]", style=ERROR_STYLE
-            )
+            self._handle_error(e, "send_message")
 
     async def _continue_after_tools(self) -> None:
         """Continue conversation after tool execution."""
+        debug = self.config.debug
+
         try:
             # Build messages with all history including tool results
             messages = []
-            
+
             if self.config.system_prompt:
                 messages.append({
                     "role": "system",
                     "content": self.config.system_prompt
                 })
-            
+
             messages.extend(self.history)
-            
+
             kwargs: dict[str, Any] = {
                 "model": self.model_name,
                 "messages": messages,
@@ -664,25 +796,46 @@ class GroqChat:
                 "max_tokens": self.config.max_tokens,
                 "stream": True,
             }
-            
+
             if self.tools:
                 kwargs["tools"] = self.tools
                 kwargs["tool_choice"] = "auto"
-            
+
+            if debug:
+                self.console.print("\n[bold yellow]═══ DEBUG: Continue After Tools ═══[/bold yellow]")
+                self.console.print(f"[dim]Message count: {len(messages)}[/dim]")
+                self.console.print("[bold yellow]════════════════════════════════════[/bold yellow]\n")
+
             stream = await self.client.chat.completions.create(**kwargs)
-            
+
             full_content = ""
             tool_calls_data: dict[int, dict] = {}
-            
+            chunk_count = 0
+
             async for chunk in stream:
+                chunk_count += 1
+
+                if debug:
+                    self.console.print(f"[dim]  [chunk {chunk_count}]: {chunk}[/dim]")
+
+                # Check for errors in chunk
+                if hasattr(chunk, 'error') and chunk.error:
+                    self.console.print(f"\n[error]API Error in chunk: {chunk.error}[/error]", style=ERROR_STYLE)
+                    continue
+
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if not delta:
                     continue
-                
+
+                # Check for finish_reason
+                finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
+                if debug and finish_reason:
+                    self.console.print(f"[dim]  [finish_reason]: {finish_reason}[/dim]")
+
                 if delta.content:
                     full_content += delta.content
                     self.console.print(delta.content, end="")
-                
+
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
@@ -695,11 +848,23 @@ class GroqChat:
                                 tool_calls_data[idx]["name"] = tc.function.name
                             if tc.function.arguments:
                                 tool_calls_data[idx]["arguments"] += tc.function.arguments
-            
+
             self.console.print()
-            
+
+            if debug:
+                self.console.print(f"[dim]Total chunks received: {chunk_count}[/dim]")
+
             # Handle more tool calls if needed (recursive)
             if tool_calls_data:
+                if debug:
+                    self.console.print("\n[bold yellow]═══ DEBUG: More Tool Calls ═══[/bold yellow]")
+                    for idx, tc_data in tool_calls_data.items():
+                        self.console.print(f"[dim]Tool {idx}:[/dim]")
+                        self.console.print(f"[dim]  ID: {tc_data['id']}[/dim]")
+                        self.console.print(f"[dim]  Name: {tc_data['name']}[/dim]")
+                        self.console.print(f"[dim]  Arguments (raw): {tc_data['arguments']}[/dim]")
+                    self.console.print("[bold yellow]══════════════════════════════[/bold yellow]\n")
+
                 assistant_tool_calls = []
                 for idx in sorted(tool_calls_data.keys()):
                     tc_data = tool_calls_data[idx]
@@ -711,31 +876,31 @@ class GroqChat:
                             "arguments": tc_data["arguments"]
                         }
                     })
-                
+
                 self.history.append({
                     "role": "assistant",
                     "content": full_content or None,
                     "tool_calls": assistant_tool_calls
                 })
-                
+
                 class MockFunction:
                     def __init__(self, name: str, arguments: str):
                         self.name = name
                         self.arguments = arguments
-                
+
                 class MockToolCall:
                     def __init__(self, id: str, function: MockFunction):
                         self.id = id
                         self.function = function
-                
+
                 mock_calls = [
                     MockToolCall(tc["id"], MockFunction(tc["function"]["name"], tc["function"]["arguments"]))
                     for tc in assistant_tool_calls
                 ]
-                
+
                 tool_results = await self._execute_tool_calls(mock_calls)
                 self.history.extend(tool_results)
-                
+
                 # Recursive call (with depth limit in practice)
                 await self._continue_after_tools()
             else:
@@ -744,17 +909,15 @@ class GroqChat:
                         "role": "assistant",
                         "content": full_content
                     })
-                    
+
         except Exception as e:
-            self.console.print(
-                f"[error]Error continuing after tools: {e}[/error]", style=ERROR_STYLE
-            )
+            self._handle_error(e, "continue_after_tools")
 
     async def run(self) -> None:
         """Main chat loop."""
         # Initialize MCP connections
         await self.initialize()
-        
+
         self.console.print()
         self.console.print(
             f"[bold]Groq CLI[/bold] - Model: {self.model_name}",
@@ -777,11 +940,11 @@ class GroqChat:
                     if user_input.startswith("/"):
                         if self._handle_command(user_input):
                             continue
-                    
+
                     # Check for bare number (shortcut for last listed items)
                     if user_input.strip().isdigit():
                         idx = int(user_input.strip()) - 1
-                        
+
                         # Check if it's for models
                         if hasattr(self, '_last_model_list') and self._last_model_list:
                             if 0 <= idx < len(self._last_model_list):
@@ -792,7 +955,7 @@ class GroqChat:
                             else:
                                 self.console.print(f"[error]Invalid number. Choose 1-{len(self._last_model_list)}[/error]", style=ERROR_STYLE)
                                 continue
-                        
+
                         # Check if it's for MCP servers (multi-digit like "134")
                         if hasattr(self, '_last_mcp_list') and self._last_mcp_list:
                             self._list_mcp(user_input.strip())  # Delegate to handler

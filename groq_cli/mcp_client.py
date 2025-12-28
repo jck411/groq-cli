@@ -68,15 +68,22 @@ class MCPServer:
         """Connect to an HTTP MCP server."""
         try:
             from mcp.client.streamable_http import streamablehttp_client
-            import httpx
+            from urllib.parse import urlparse
 
             logger.info(f"Connecting to HTTP MCP server: {self.name} at {self.http_url}")
 
-            # First check if the server is reachable
+            # First check if the server is reachable via TCP socket (like Backend does)
             try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
-                    await client.get(self.http_url)
-            except Exception:
+                parsed = urlparse(self.http_url)
+                host = parsed.hostname or "127.0.0.1"
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port),
+                    timeout=2.0,
+                )
+                writer.close()
+                await writer.wait_closed()
+            except (OSError, asyncio.TimeoutError):
                 logger.warning(f"HTTP MCP server {self.name} not reachable at {self.http_url}")
                 return False
 
@@ -240,7 +247,7 @@ class MCPClient:
 
     def load_config(self, config_path: Path | None = None) -> bool:
         """Load MCP server configuration from JSON file.
-        
+
         Supports both legacy format and Backend's mcp_servers.json format.
         """
         # Try to load from provided path or default Backend config
@@ -258,7 +265,7 @@ class MCPClient:
             # Handle Backend format: {"servers": [{...}, ...]}
             if "servers" in config and isinstance(config["servers"], list):
                 return self._load_backend_format(config["servers"])
-            
+
             # Handle legacy format: {"mcpServers": {...}} or {"servers": {...}}
             servers_config = config.get("servers", config.get("mcpServers", {}))
             if isinstance(servers_config, dict):
@@ -291,7 +298,7 @@ class MCPClient:
             # Build HTTP URL from http_port if available
             http_port = server_config.get("http_port")
             http_url = server_config.get("http_url")
-            
+
             if http_port and not http_url:
                 http_url = f"http://127.0.0.1:{http_port}/mcp"
 
@@ -373,3 +380,4 @@ class MCPClient:
                 "http": server.is_http,
             })
         return result
+
